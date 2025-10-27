@@ -10,13 +10,56 @@ from execution import get_input_data
 from comfy_execution.graph import DynamicPrompt
 
 
+class _ExecListCompat:
+    """
+    Minimal adapter to satisfy execution.get_input_data(...), which expects an object
+    exposing get_output_cache(input_unique_id, unique_id).
+    Works across ComfyUI versions where PromptExecutor may or may not expose:
+      - execution_list.get_output_cache(...)
+      - caches.outputs.get_output_cache(...)
+    If neither exists, we just return None (cache miss is acceptable).
+    """
+    def __init__(self, prompt_executer):
+        self._pe = prompt_executer
+
+    def get_output_cache(self, input_unique_id, unique_id):
+        # Try execution_list first (newer builds)
+        try:
+            el = getattr(self._pe, "execution_list", None)
+            if el and hasattr(el, "get_output_cache"):
+                return el.get_output_cache(input_unique_id, unique_id)
+        except Exception:
+            pass
+
+        # Try caches.outputs (some builds expose it)
+        try:
+            caches = getattr(self._pe, "caches", None)
+            if caches is not None:
+                outputs = getattr(caches, "outputs", None)
+                if outputs and hasattr(outputs, "get_output_cache"):
+                    return outputs.get_output_cache(input_unique_id, unique_id)
+        except Exception:
+            pass
+
+        # Try caches directly (rare, but be generous)
+        try:
+            caches = getattr(self._pe, "caches", None)
+            if caches and hasattr(caches, "get_output_cache"):
+                return caches.get_output_cache(input_unique_id, unique_id)
+        except Exception:
+            pass
+
+        # As a safe default, report cache miss
+        return None
+
+
 class Capture:
     @classmethod
     def get_inputs(cls):
         inputs = {}
         prompt = hook.current_prompt
         extra_data = hook.current_extra_data
-        outputs = hook.prompt_executer.caches.outputs
+        outputs = _ExecListCompat(hook.prompt_executer)
 
         for node_id, obj in prompt.items():
             class_type = obj["class_type"]
